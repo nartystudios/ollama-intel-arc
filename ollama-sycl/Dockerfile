@@ -8,8 +8,9 @@ ARG GMM_VERSION=22.9.0
 
 # =============================================================================
 # Stage 1: Build ggml-sycl backend from ollama's ggml source using Intel oneAPI
+# (2026.0+: Base + HPC kits unified as Intel® oneAPI Toolkit — see release notes.)
 # =============================================================================
-FROM intel/oneapi-basekit:2025.2.2-0-devel-ubuntu24.04 AS sycl-builder
+FROM intel/oneapi-toolkit:2026.0.0-devel-ubuntu24.04 AS sycl-builder
 
 ARG OLLAMA_VERSION
 ARG GGML_COMMIT
