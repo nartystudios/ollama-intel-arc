@@ -1,5 +1,5 @@
-ARG OLLAMA_VERSION=0.22.0
-ARG GGML_COMMIT=15bff84bf56651d6f991f166a2bf0f362996f7f9
+ARG OLLAMA_VERSION=0.23.2
+ARG GGML_COMMIT=b46812de78f8fbcb6cf0154947e8633ebc78d9ac
 ARG COMPUTE_RUNTIME_VERSION=26.14.37833.4
 ARG LEVEL_ZERO_VERSION=1.28.2
 ARG IGC_VERSION=2.32.7
@@ -29,9 +29,14 @@ RUN git clone --depth 1 --branch v${OLLAMA_VERSION} \
 
 WORKDIR /ollama
 
-# Apply API compatibility patches
+# Apply API compatibility patches.
+# The patcher inspects Ollama's actual ggml-backend-impl.h to decide which
+# rules to apply, so future Ollama upgrades that converge on upstream become
+# automatic no-ops instead of silent ABI mismatches.
 COPY patch-sycl.py /tmp/patch-sycl.py
-RUN python3 /tmp/patch-sycl.py ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp
+RUN python3 /tmp/patch-sycl.py \
+  ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp \
+  --abi-header ml/backend/ggml/ggml/src/ggml-backend-impl.h
 
 # Build the SYCL backend as a dynamic library
 RUN cmake -B build \
