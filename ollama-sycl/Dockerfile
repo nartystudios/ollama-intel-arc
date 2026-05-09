@@ -1,5 +1,7 @@
 ARG OLLAMA_VERSION=0.22.0
-ARG GGML_COMMIT=15bff84bf56651d6f991f166a2bf0f362996f7f9
+# Post–oneAPI 2026: Intel removed SYCLcompat headers; need ggml-sycl without
+# `#include <syclcompat/math.hpp>` (see intel/llvm SYCLcompat removal).
+ARG GGML_COMMIT=1e5ad35d560b90a8ac447d149c8f8447ae1fcaa0
 ARG COMPUTE_RUNTIME_VERSION=26.14.37833.4
 ARG LEVEL_ZERO_VERSION=1.28.2
 ARG IGC_VERSION=2.32.7
