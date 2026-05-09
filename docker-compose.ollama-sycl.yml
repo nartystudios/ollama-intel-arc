@@ -3,16 +3,15 @@ services:
     image: docker.io/nartystudios/ollama-intel-arc-sycl:latest
     container_name: ollama-sycl
     restart: unless-stopped
+    network_mode: host
     devices:
       - /dev/dri:/dev/dri
     volumes:
       - ollama-volume:/root/.ollama
       - sycl-cache-volume:/root/.cache
-    ports:
-      - 11434:11434
     environment:
-      - no_proxy=localhost,127.0.0.1,ollama-sycl
-      - NO_PROXY=localhost,127.0.0.1,ollama-sycl
+      - no_proxy=localhost,127.0.0.1
+      - NO_PROXY=localhost,127.0.0.1
       - ONEAPI_DEVICE_SELECTOR=level_zero:0
       - ZES_ENABLE_SYSMAN=1
       - SYCL_CACHE_PERSISTENT=1
