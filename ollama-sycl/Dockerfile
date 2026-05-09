@@ -1,7 +1,7 @@
 ARG OLLAMA_VERSION=0.22.0
-# Post–oneAPI 2026: Intel removed SYCLcompat headers; need ggml-sycl without
-# `#include <syclcompat/math.hpp>` (see intel/llvm SYCLcompat removal).
-ARG GGML_COMMIT=1e5ad35d560b90a8ac447d149c8f8447ae1fcaa0
+# Must match Ollama's vendored ggml (headers/ops); only replace ggml-sycl tree.
+# oneAPI 2026 removed SYCLcompat: strip the lone include (intel/llvm SYCLcompat removal).
+ARG GGML_COMMIT=15bff84bf56651d6f991f166a2bf0f362996f7f9
 ARG COMPUTE_RUNTIME_VERSION=26.14.37833.4
 ARG LEVEL_ZERO_VERSION=1.28.2
 ARG IGC_VERSION=2.32.7
@@ -35,6 +35,10 @@ WORKDIR /ollama
 # Apply API compatibility patches
 COPY patch-sycl.py /tmp/patch-sycl.py
 RUN python3 /tmp/patch-sycl.py ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp
+
+# SYCLcompat headers removed from DPC++ 2026; this include is unused with oneMKL alias.
+RUN sed -i '\|#include <syclcompat/math.hpp>|d' \
+  ml/backend/ggml/ggml/src/ggml-sycl/dpct/helper.hpp
 
 # Build the SYCL backend as a dynamic library (verbose)
 RUN cmake -B build \
