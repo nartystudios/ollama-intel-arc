@@ -33,7 +33,7 @@ WORKDIR /ollama
 COPY patch-sycl.py /tmp/patch-sycl.py
 RUN python3 /tmp/patch-sycl.py ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp
 
-# Build the SYCL backend as a dynamic library
+# Build the SYCL backend as a dynamic library (verbose)
 RUN cmake -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=icx \
@@ -99,19 +99,18 @@ RUN apt-get update && \
   libhwloc15 && \
   rm -rf /var/lib/apt/lists/*
 
-# Intel GPU runtimes (release 26.05.37020.3)
-# Provides level-zero, IGC, compute-runtime for Intel GPU kernel support
-  RUN mkdir -p /tmp/gpu && cd /tmp/gpu && \
-    wget https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/level-zero_${LEVEL_ZERO_VERSION}+u24.04_amd64.deb && \
-    wget https://github.com/intel/intel-graphics-compiler/releases/download/v${IGC_VERSION}/intel-igc-core-2_${IGC_VERSION}+${IGC_BUILD}_amd64.deb && \
-    wget https://github.com/intel/intel-graphics-compiler/releases/download/v${IGC_VERSION}/intel-igc-opencl-2_${IGC_VERSION}+${IGC_BUILD}_amd64.deb && \
-    wget https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/intel-ocloc_${COMPUTE_RUNTIME_VERSION}-0_amd64.deb && \
-    wget https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/intel-opencl-icd_${COMPUTE_RUNTIME_VERSION}-0_amd64.deb && \
-    wget https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/libigdgmm12_${GMM_VERSION}_amd64.deb && \
-    wget https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/libze-intel-gpu1_${COMPUTE_RUNTIME_VERSION}-0_amd64.deb && \
-    dpkg -i *.deb && rm -rf /tmp/gpu
+# Intel GPU runtimes
+RUN mkdir -p /tmp/gpu && cd /tmp/gpu && \
+  wget https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/level-zero_${LEVEL_ZERO_VERSION}+u24.04_amd64.deb && \
+  wget https://github.com/intel/intel-graphics-compiler/releases/download/v${IGC_VERSION}/intel-igc-core-2_${IGC_VERSION}+${IGC_BUILD}_amd64.deb && \
+  wget https://github.com/intel/intel-graphics-compiler/releases/download/v${IGC_VERSION}/intel-igc-opencl-2_${IGC_VERSION}+${IGC_BUILD}_amd64.deb && \
+  wget https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/intel-ocloc_${COMPUTE_RUNTIME_VERSION}-0_amd64.deb && \
+  wget https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/intel-opencl-icd_${COMPUTE_RUNTIME_VERSION}-0_amd64.deb && \
+  wget https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/libigdgmm12_${GMM_VERSION}_amd64.deb && \
+  wget https://github.com/intel/compute-runtime/releases/download/${COMPUTE_RUNTIME_VERSION}/libze-intel-gpu1_${COMPUTE_RUNTIME_VERSION}-0_amd64.deb && \
+  dpkg -i *.deb && rm -rf /tmp/gpu
 
-# Install official ollama binary + CPU runners (skip CUDA/MLX/Vulkan)
+# Install official ollama binary + CPU runners
 RUN wget -qO- "https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERSION}/ollama-linux-amd64.tar.zst" | \
   zstd -d | tar -xf - -C /usr && \
   rm -rf /usr/lib/ollama/cuda_* /usr/lib/ollama/mlx_* /usr/lib/ollama/vulkan
@@ -119,20 +118,11 @@ RUN wget -qO- "https://github.com/ollama/ollama/releases/download/v${OLLAMA_VERS
 # Install SYCL runner from build stage
 COPY --from=sycl-builder /sycl-runner/ /usr/lib/ollama/sycl/
 
-# Serve ollama on all interfaces
 ENV OLLAMA_HOST=0.0.0.0
-
-# Keep models loaded in memory
 ENV OLLAMA_KEEP_ALIVE=24h
-
-# Flash attention not supported by SYCL backend
 ENV OLLAMA_FLASH_ATTENTION=false
-
-# Intel GPU tuning
 ENV ZES_ENABLE_SYSMAN=1
 ENV ONEAPI_DEVICE_SELECTOR=level_zero:0
-
-# For Intel Core Ultra Processors (Series 1), code name Meteor Lake
 ENV IPEX_LLM_NPU_MTL=1
 
 EXPOSE 11434

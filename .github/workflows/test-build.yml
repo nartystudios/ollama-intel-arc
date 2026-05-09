@@ -1,25 +1,105 @@
 name: Test Build ollama-sycl
 
 on:
+  pull_request:
+    paths:
+      - 'ollama-sycl/**'
+      - '.github/workflows/test-build.yml'
+      - '.github/workflows/build-and-push.yml'
   workflow_dispatch:
+    inputs:
+      ollama_version:
+        description: 'Ollama version (without the leading v). Empty = latest stable.'
+        required: false
+      ggml_commit:
+        description: 'llama.cpp commit SHA. Empty = SHA of the latest llama.cpp release tag.'
+        required: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  patcher-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run patcher tests
+        run: python -m pytest ollama-sycl/tests/ -v
+
   build:
+    needs: patcher-tests
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve OLLAMA_VERSION and GGML_COMMIT
+        id: versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_OLLAMA: ${{ github.event.inputs.ollama_version }}
+          INPUT_GGML: ${{ github.event.inputs.ggml_commit }}
+        run: |
+          set -euo pipefail
+
+          api() { curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$@"; }
+
+          if [ -n "${INPUT_OLLAMA:-}" ]; then
+            OLLAMA_VERSION="${INPUT_OLLAMA}"
+          else
+            OLLAMA_VERSION=$(api https://api.github.com/repos/ollama/ollama/releases/latest | jq -r .tag_name | sed 's/^v//')
+          fi
+          echo "Resolved OLLAMA_VERSION=${OLLAMA_VERSION}"
+
+          if [ -n "${INPUT_GGML:-}" ]; then
+            GGML_COMMIT="${INPUT_GGML}"
+          else
+            GGML_TAG=$(api https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | jq -r .tag_name)
+            REF=$(api "https://api.github.com/repos/ggml-org/llama.cpp/git/refs/tags/${GGML_TAG}")
+            REF_TYPE=$(echo "$REF" | jq -r .object.type)
+            REF_SHA=$(echo "$REF" | jq -r .object.sha)
+            if [ "$REF_TYPE" = "tag" ]; then
+              GGML_COMMIT=$(api "https://api.github.com/repos/ggml-org/llama.cpp/git/tags/${REF_SHA}" | jq -r .object.sha)
+            else
+              GGML_COMMIT="$REF_SHA"
+            fi
+          fi
+          echo "Resolved GGML_COMMIT=${GGML_COMMIT}"
+
+          {
+            echo "ollama_version=${OLLAMA_VERSION}"
+            echo "ggml_commit=${GGML_COMMIT}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build
+      - name: Build (no push)
         uses: docker/build-push-action@v5
         with:
           context: ./ollama-sycl
           push: false
+          load: true
           tags: ollama-sycl:test
+          build-args: |
+            OLLAMA_VERSION=${{ steps.versions.outputs.ollama_version }}
+            GGML_COMMIT=${{ steps.versions.outputs.ggml_commit }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test built image
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /usr/bin/ollama ollama-sycl:test --version
+          docker run --rm --entrypoint /bin/sh ollama-sycl:test -c 'ls -la /usr/lib/ollama/sycl/libggml-sycl.so'
