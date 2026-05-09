@@ -2,11 +2,19 @@ name: Build and Push ollama-sycl
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'feat/**'
+    paths:
+      - 'ollama-sycl/**'
+      - '.github/workflows/build-and-push.yml'
+  pull_request:
+    branches:
+      - main
     paths:
       - 'ollama-sycl/**'
   schedule:
-    - cron: '0 6 * * 1'
+    - cron: '0 3 * * *'
   workflow_dispatch:
     inputs:
       ollama_version:
@@ -38,6 +46,7 @@ jobs:
           echo "Building Ollama v$VERSION"
 
       - name: Log in to Docker Hub
+        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -46,7 +55,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push
+      - name: Build only (feature branch / PR)
+        if: github.ref != 'refs/heads/main' && github.event_name != 'schedule'
+        uses: docker/build-push-action@v5
+        with:
+          context: ./ollama-sycl
+          push: false
+          tags: |
+            nartystudios/ollama-intel-arc-sycl:dev
+          build-args: |
+            OLLAMA_VERSION=${{ steps.ollama.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push (main / nightly)
+        if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
         uses: docker/build-push-action@v5
         with:
           context: ./ollama-sycl
@@ -54,6 +77,7 @@ jobs:
           tags: |
             nartystudios/ollama-intel-arc-sycl:latest
             nartystudios/ollama-intel-arc-sycl:${{ steps.ollama.outputs.version }}
+            nartystudios/ollama-intel-arc-sycl:nightly
           build-args: |
             OLLAMA_VERSION=${{ steps.ollama.outputs.version }}
           cache-from: type=gha
