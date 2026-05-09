@@ -29,14 +29,6 @@ RUN git clone --depth 1 --branch v${OLLAMA_VERSION} \
 
 WORKDIR /ollama
 
-# Debug: show cmake files available
-RUN echo "=== CMakeLists.txt root ===" && \
-  head -50 CMakeLists.txt 2>/dev/null || echo "NOT FOUND" && \
-  echo "=== ml/backend/ggml/CMakeLists.txt ===" && \
-  head -50 ml/backend/ggml/CMakeLists.txt 2>/dev/null || echo "NOT FOUND" && \
-  echo "=== Available cmake targets grep ===" && \
-  grep -r "OLLAMA_RUNNER_DIR\|ggml-sycl\|add_library" --include="*.cmake" --include="CMakeLists.txt" -l 2>/dev/null | head -10
-
 # Apply API compatibility patches
 COPY patch-sycl.py /tmp/patch-sycl.py
 RUN python3 /tmp/patch-sycl.py ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp
@@ -49,8 +41,8 @@ RUN cmake -B build \
   -DGGML_SYCL=ON \
   -DGGML_SYCL_TARGET=INTEL \
   -DGGML_SYCL_F16=ON \
-  -DOLLAMA_RUNNER_DIR=sycl 2>&1 | tail -50 && \
-  cmake --build build --parallel $(nproc) --target ggml-sycl --verbose 2>&1 | tail -100
+  -DOLLAMA_RUNNER_DIR=sycl && \
+  cmake --build build --parallel $(nproc) --target ggml-sycl
 
 # Collect the SYCL runner and its oneAPI runtime dependencies into /sycl-runner
 RUN mkdir -p /sycl-runner && \
