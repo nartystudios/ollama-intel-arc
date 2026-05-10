@@ -34,7 +34,9 @@ WORKDIR /ollama
 
 # Apply API compatibility patches
 COPY patch-sycl.py /tmp/patch-sycl.py
-RUN python3 /tmp/patch-sycl.py ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp
+RUN AGENT_DEBUG_LOG=/ollama/patch-agent.ndjson python3 /tmp/patch-sycl.py \
+  ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp && \
+  (test -f /ollama/patch-agent.ndjson && cat /ollama/patch-agent.ndjson >&2 || true)
 
 # SYCLcompat headers removed from DPC++ 2026; this include is unused with oneMKL alias.
 RUN sed -i '\|#include <syclcompat/math.hpp>|d' \
@@ -80,8 +82,11 @@ RUN mkdir -p /sycl-runner && \
   # SYCL SPIR-V kernels (needed for bfloat16, complex math, etc.)
   cp /opt/intel/oneapi/compiler/latest/lib/libsycl-fallback*.spv /sycl-runner/ && \
   cp /opt/intel/oneapi/compiler/latest/lib/libsycl-native*.spv /sycl-runner/ && \
-  # Strip debug symbols to reduce size
-  strip --strip-unneeded /sycl-runner/*.so* 2>/dev/null; true
+  # Strip deps only: avoid strip on libggml-sycl.so and libsycl (SYCL/icpx unwind/metadata).
+  find /sycl-runner -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) \
+    ! -name 'libggml-sycl.so' ! -name 'libsycl.so' ! -name 'libsycl.so.*' \
+    -exec strip --strip-unneeded {} + 2>/dev/null; true && \
+  sha256sum /sycl-runner/libggml-sycl.so >&2
 
 # =============================================================================
 # Stage 2: Runtime image
@@ -130,7 +135,6 @@ ENV OLLAMA_KEEP_ALIVE=24h
 ENV OLLAMA_FLASH_ATTENTION=false
 ENV ZES_ENABLE_SYSMAN=1
 ENV ONEAPI_DEVICE_SELECTOR=level_zero:0
-ENV IPEX_LLM_NPU_MTL=1
 
 EXPOSE 11434
 ENTRYPOINT ["/usr/bin/ollama"]
