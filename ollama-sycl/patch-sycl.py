@@ -46,42 +46,11 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import re
 import sys
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
-
-
-# #region agent log
-def _agent_debug_log(hypothesis_id: str, message: str, data: dict) -> None:
-    rec = {
-        "sessionId": "5e1fec",
-        "hypothesisId": hypothesis_id,
-        "message": message,
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    line = json.dumps(rec, separators=(",", ":"))
-    try:
-        print("AGENT_DEBUG " + line, file=sys.stderr, flush=True)
-    except Exception:
-        pass
-    p = os.environ.get("AGENT_DEBUG_LOG", "").strip()
-    if p:
-        try:
-            fp = Path(p)
-            fp.parent.mkdir(parents=True, exist_ok=True)
-            with fp.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-        except OSError:
-            pass
-
-
-# #endregion
 
 
 DEFAULT_ABI_HEADER = Path("ml/backend/ggml/ggml/src/ggml-backend-impl.h")
@@ -263,20 +232,6 @@ RULES: list[Rule] = [
 
 def patch_file(src_path: Path, header_path: Path) -> PatchResult:
     abi = parse_backend_abi(header_path)
-    # #region agent log
-    _agent_debug_log(
-        "H_ABI_PARSE",
-        "parse_backend_abi",
-        {
-            "header": str(header_path),
-            "graph_compute_has_batch_size": abi.graph_compute_has_batch_size,
-            "has_set_tensor_2d_async": abi.has_set_tensor_2d_async,
-            "has_get_tensor_2d_async": abi.has_get_tensor_2d_async,
-            "has_buffer_set_tensor_2d": abi.has_buffer_set_tensor_2d,
-            "has_buffer_get_tensor_2d": abi.has_buffer_get_tensor_2d,
-        },
-    )
-    # #endregion
     src = src_path.read_text()
     original = src
     applied: list[str] = []
@@ -301,18 +256,6 @@ def patch_file(src_path: Path, header_path: Path) -> PatchResult:
     changed = src != original
     if changed:
         src_path.write_text(src)
-    # #region agent log
-    _agent_debug_log(
-        "H_PATCH_RESULT",
-        "patch_file_complete",
-        {
-            "source": str(src_path),
-            "changed": changed,
-            "applied": applied,
-            "graph_compute_already_patched_after": _graph_compute_already_patched(src),
-        },
-    )
-    # #endregion
     return PatchResult(changed=changed, applied=applied)
 
 

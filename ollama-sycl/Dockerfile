@@ -1,6 +1,5 @@
 ARG OLLAMA_VERSION=0.22.0
 # Must match Ollama's vendored ggml (headers/ops); only replace ggml-sycl tree.
-# oneAPI 2026 removed SYCLcompat: strip the lone include (intel/llvm SYCLcompat removal).
 ARG GGML_COMMIT=15bff84bf56651d6f991f166a2bf0f362996f7f9
 ARG COMPUTE_RUNTIME_VERSION=26.14.37833.4
 ARG LEVEL_ZERO_VERSION=1.28.2
@@ -8,12 +7,15 @@ ARG IGC_VERSION=2.32.7
 ARG IGC_BUILD=21184
 ARG GMM_VERSION=22.9.0
 
-# =============================================================================
-# Stage 1: Build ggml-sycl backend from ollama's ggml source using Intel oneAPI
-# (2026.0+: Base + HPC kits unified as Intel® oneAPI Toolkit — see release notes.)
-# =============================================================================
-FROM intel/oneapi-toolkit:2026.0.0-devel-ubuntu24.04 AS sycl-builder
+# Default: oneAPI Base Kit 2025.2.x — stable with this ggml-sycl + Ollama 0.22.
+# For Intel® oneAPI Toolkit 2026 (no SYCLcompat headers), build with:
+#   --build-arg ONEAPI_TOOLKIT_IMAGE=intel/oneapi-toolkit:2026.0.0-devel-ubuntu24.04 \
+#   --build-arg STRIP_SYCLCOMPAT=1
+ARG ONEAPI_TOOLKIT_IMAGE=intel/oneapi-basekit:2025.2.2-0-devel-ubuntu24.04
 
+FROM ${ONEAPI_TOOLKIT_IMAGE} AS sycl-builder
+
+ARG STRIP_SYCLCOMPAT=0
 ARG OLLAMA_VERSION
 ARG GGML_COMMIT
 
@@ -34,13 +36,13 @@ WORKDIR /ollama
 
 # Apply API compatibility patches
 COPY patch-sycl.py /tmp/patch-sycl.py
-RUN AGENT_DEBUG_LOG=/ollama/patch-agent.ndjson python3 /tmp/patch-sycl.py \
-  ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp && \
-  (test -f /ollama/patch-agent.ndjson && cat /ollama/patch-agent.ndjson >&2 || true)
+RUN python3 /tmp/patch-sycl.py ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp
 
-# SYCLcompat headers removed from DPC++ 2026; this include is unused with oneMKL alias.
-RUN sed -i '\|#include <syclcompat/math.hpp>|d' \
-  ml/backend/ggml/ggml/src/ggml-sycl/dpct/helper.hpp
+# DPC++ 2026 removed SYCLcompat; strip the include only when building against 2026+.
+RUN if [ "${STRIP_SYCLCOMPAT}" = "1" ]; then \
+  sed -i '\|#include <syclcompat/math.hpp>|d' \
+    ml/backend/ggml/ggml/src/ggml-sycl/dpct/helper.hpp; \
+  fi
 
 # Build the SYCL backend as a dynamic library (verbose)
 RUN cmake -B build \
@@ -58,7 +60,7 @@ RUN mkdir -p /sycl-runner && \
   cp build/lib/ollama/libggml-sycl.so /sycl-runner/ && \
   # SYCL / DPC++ runtime
   cp /opt/intel/oneapi/compiler/latest/lib/libsycl.so* /sycl-runner/ && \
-  # Unified Runtime (oneAPI 2025+) — search multiple possible locations
+  # Unified Runtime (oneAPI 2025+)
   find /opt/intel/oneapi -name 'libur_loader.so*' | head -3 | xargs -I{} cp {} /sycl-runner/ && \
   find /opt/intel/oneapi -name 'libur_adapter_level_zero.so*' | head -3 | xargs -I{} cp {} /sycl-runner/ && \
   find /opt/intel/oneapi -maxdepth 4 -name 'libumf.so*' | head -3 | xargs -I{} cp {} /sycl-runner/ && \
@@ -77,16 +79,10 @@ RUN mkdir -p /sycl-runner && \
   cp /opt/intel/oneapi/compiler/latest/lib/libintlc.so* /sycl-runner/ && \
   cp /opt/intel/oneapi/compiler/latest/lib/libirng.so /sycl-runner/ && \
   cp /opt/intel/oneapi/compiler/latest/lib/libiomp5.so /sycl-runner/ && \
-  # Level-zero PI plugin (legacy, may not exist)
   cp /opt/intel/oneapi/compiler/latest/lib/libpi_level_zero.so* /sycl-runner/ 2>/dev/null; \
   # SYCL SPIR-V kernels (needed for bfloat16, complex math, etc.)
   cp /opt/intel/oneapi/compiler/latest/lib/libsycl-fallback*.spv /sycl-runner/ && \
-  cp /opt/intel/oneapi/compiler/latest/lib/libsycl-native*.spv /sycl-runner/ && \
-  # Strip deps only: avoid strip on libggml-sycl.so and libsycl (SYCL/icpx unwind/metadata).
-  find /sycl-runner -maxdepth 1 -type f \( -name '*.so' -o -name '*.so.*' \) \
-    ! -name 'libggml-sycl.so' ! -name 'libsycl.so' ! -name 'libsycl.so.*' \
-    -exec strip --strip-unneeded {} + 2>/dev/null; true && \
-  sha256sum /sycl-runner/libggml-sycl.so >&2
+  cp /opt/intel/oneapi/compiler/latest/lib/libsycl-native*.spv /sycl-runner/
 
 # =============================================================================
 # Stage 2: Runtime image
