@@ -55,12 +55,14 @@ RUN set -eux; \
       echo "[patch-sycl] SYCLCOMPAT helper=${HELPER:-MISSING}"; \
       if [ -n "${HELPER}" ]; then sed -i '\|#include <syclcompat/math.hpp>|d' "${HELPER}"; fi; \
     fi; \
+    echo "[ollama-sycl] cmake: GGML_NATIVE=OFF (required when GGML_BACKEND_DL=ON)"; \
     cmake -S /work/llama.cpp -B /work/llama.cpp/build \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=icx \
       -DCMAKE_CXX_COMPILER=icpx \
       -DBUILD_SHARED_LIBS=ON \
       -DGGML_BACKEND_DL=ON \
+      -DGGML_NATIVE=OFF \
       -DGGML_SYCL=ON \
       -DGGML_SYCL_TARGET=INTEL \
       -DGGML_SYCL_F16=ON; \
