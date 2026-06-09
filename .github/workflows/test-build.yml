@@ -65,14 +65,23 @@ jobs:
           if [ -n "${INPUT_GGML:-}" ]; then
             GGML_COMMIT="${INPUT_GGML}"
           else
-            GGML_TAG=$(api https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | jq -r .tag_name)
-            REF=$(api "https://api.github.com/repos/ggml-org/llama.cpp/git/refs/tags/${GGML_TAG}")
-            REF_TYPE=$(echo "$REF" | jq -r .object.type)
-            REF_SHA=$(echo "$REF" | jq -r .object.sha)
-            if [ "$REF_TYPE" = "tag" ]; then
-              GGML_COMMIT=$(api "https://api.github.com/repos/ggml-org/llama.cpp/git/tags/${REF_SHA}" | jq -r .object.sha)
+            # Modern Ollama pins llama.cpp in LLAMA_CPP_VERSION — must match the release binary ABI.
+            O_TAG="v${OLLAMA_VERSION#v}"
+            if LLAMA_PIN="$(curl -fsSL "https://raw.githubusercontent.com/ollama/ollama/${O_TAG}/LLAMA_CPP_VERSION" 2>/dev/null | tr -d ' \t\r\n')" && [ -n "${LLAMA_PIN}" ]; then
+              GGML_COMMIT="${LLAMA_PIN}"
+              echo "Resolved GGML_COMMIT from Ollama LLAMA_CPP_VERSION: ${GGML_COMMIT}"
             else
-              GGML_COMMIT="$REF_SHA"
+              # Legacy Ollama (no LLAMA_CPP_VERSION): fall back to latest llama.cpp release tag SHA.
+              GGML_TAG=$(api https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | jq -r .tag_name)
+              REF=$(api "https://api.github.com/repos/ggml-org/llama.cpp/git/refs/tags/${GGML_TAG}")
+              REF_TYPE=$(echo "$REF" | jq -r .object.type)
+              REF_SHA=$(echo "$REF" | jq -r .object.sha)
+              if [ "$REF_TYPE" = "tag" ]; then
+                GGML_COMMIT=$(api "https://api.github.com/repos/ggml-org/llama.cpp/git/tags/${REF_SHA}" | jq -r .object.sha)
+              else
+                GGML_COMMIT="$REF_SHA"
+              fi
+              echo "Resolved GGML_COMMIT from latest llama.cpp release: ${GGML_COMMIT}"
             fi
           fi
           echo "Resolved GGML_COMMIT=${GGML_COMMIT}"
