@@ -1,4 +1,4 @@
-ARG OLLAMA_VERSION=0.22.0
+ARG OLLAMA_VERSION=0.30.6
 # Must match Ollama's vendored ggml (headers/ops); only replace ggml-sycl tree.
 ARG GGML_COMMIT=15bff84bf56651d6f991f166a2bf0f362996f7f9
 ARG COMPUTE_RUNTIME_VERSION=26.14.37833.4
