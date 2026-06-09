@@ -1,13 +1,15 @@
-ARG OLLAMA_VERSION=0.30.6
-# Must match Ollama's vendored ggml (headers/ops); only replace ggml-sycl tree.
-ARG GGML_COMMIT=15bff84bf56651d6f991f166a2bf0f362996f7f9
+ARG OLLAMA_VERSION=0.30.7
+# Optional llama.cpp git tag or SHA.
+# - Modern Ollama (has LLAMA_CPP_VERSION): defaults to that file's tag (e.g. b9509 for v0.30.7).
+# - Legacy Ollama (no LLAMA_CPP_VERSION): defaults to the pin in the RUN script if unset.
+ARG GGML_COMMIT
 ARG COMPUTE_RUNTIME_VERSION=26.14.37833.4
 ARG LEVEL_ZERO_VERSION=1.28.2
 ARG IGC_VERSION=2.32.7
 ARG IGC_BUILD=21184
 ARG GMM_VERSION=22.9.0
 
-# Default: oneAPI Base Kit 2025.2.x — stable with this ggml-sycl + Ollama 0.22.
+# Default: oneAPI Base Kit 2025.2.x.
 # For Intel® oneAPI Toolkit 2026 (no SYCLcompat headers), build with:
 #   --build-arg ONEAPI_TOOLKIT_IMAGE=intel/oneapi-toolkit:2026.0.0-devel-ubuntu24.04 \
 #   --build-arg STRIP_SYCLCOMPAT=1
@@ -19,72 +21,100 @@ ARG STRIP_SYCLCOMPAT=0
 ARG OLLAMA_VERSION
 ARG GGML_COMMIT
 
-# Surgically replace Ollama's vendored ggml-sycl with a newer upstream version
-RUN git clone --depth 1 --branch v${OLLAMA_VERSION} \
-  https://github.com/ollama/ollama.git /ollama && \
-  git init /tmp/llama.cpp && \
-  cd /tmp/llama.cpp && \
-  git remote add origin https://github.com/ggml-org/llama.cpp.git && \
-  git sparse-checkout set ggml/src/ggml-sycl && \
-  git fetch --depth 1 origin ${GGML_COMMIT} && \
-  git checkout FETCH_HEAD && \
-  cp -r /tmp/llama.cpp/ggml/src/ggml-sycl \
-  /ollama/ml/backend/ggml/ggml/src/ggml-sycl && \
-  rm -rf /tmp/llama.cpp
+# Ollama >= ~0.29: ggml is no longer fully vendored under ml/backend/ggml; the repo ships
+# LLAMA_CPP_VERSION and builds via FetchContent from llama/ (see root CMakeLists.txt).
+# Ollama < 0.29: shallow clone still contains ml/backend/ggml/... and we inject ggml-sycl there.
+RUN git clone --depth 1 --branch "v${OLLAMA_VERSION}" \
+  https://github.com/ollama/ollama.git /ollama
 
-WORKDIR /ollama
-
-# Apply API compatibility patches
 COPY patch-sycl.py /tmp/patch-sycl.py
-RUN python3 /tmp/patch-sycl.py \
-  ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp \
-  --abi-header ml/backend/ggml/ggml/src/ggml-backend-impl.h
 
-# DPC++ 2026 removed SYCLcompat; strip the include only when building against 2026+.
-RUN if [ "${STRIP_SYCLCOMPAT}" = "1" ]; then \
-  sed -i '\|#include <syclcompat/math.hpp>|d' \
-    ml/backend/ggml/ggml/src/ggml-sycl/dpct/helper.hpp; \
+RUN set -eux; \
+  if [ -f /ollama/LLAMA_CPP_VERSION ]; then \
+    echo "[ollama-sycl] modern layout: standalone llama.cpp from LLAMA_CPP_VERSION"; \
+    if [ -n "${GGML_COMMIT:-}" ]; then LREF="${GGML_COMMIT}"; \
+    else LREF="$(tr -d ' \t\r\n' < /ollama/LLAMA_CPP_VERSION)"; fi; \
+    echo "[ollama-sycl] llama.cpp ref=${LREF}"; \
+    git clone --depth 1 --branch "${LREF}" https://github.com/ggml-org/llama.cpp.git /work/llama.cpp \
+      || (git clone https://github.com/ggml-org/llama.cpp.git /work/llama.cpp \
+        && cd /work/llama.cpp && git fetch --depth 1 origin "${LREF}" && git checkout FETCH_HEAD); \
+    cd /work/llama.cpp && cmake -D PATCH_DIR=/ollama/llama/compat -P /ollama/llama/compat/apply-patch.cmake; \
+    SYCL_CPP="$(find /work/llama.cpp -type f -path '*/ggml-sycl/ggml-sycl.cpp' | head -1)"; \
+    ABI_HDR="$(find /work/llama.cpp -type f -name 'ggml-backend-impl.h' | head -1)"; \
+    echo "[patch-sycl] SYCL_CPP=${SYCL_CPP}"; \
+    echo "[patch-sycl] ABI_HDR=${ABI_HDR}"; \
+    test -n "${SYCL_CPP}" && test -n "${ABI_HDR}"; \
+    python3 /tmp/patch-sycl.py "${SYCL_CPP}" --abi-header "${ABI_HDR}"; \
+    if [ "${STRIP_SYCLCOMPAT}" = "1" ]; then \
+      HELPER="$(find /work/llama.cpp /ollama -type f -path '*/ggml-sycl/dpct/helper.hpp' 2>/dev/null | head -1)"; \
+      echo "[patch-sycl] SYCLCOMPAT helper=${HELPER:-MISSING}"; \
+      test -n "${HELPER}" && sed -i '\|#include <syclcompat/math.hpp>|d' "${HELPER}"; \
+    fi; \
+    cmake -S /work/llama.cpp -B /work/llama.cpp/build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_COMPILER=icx \
+      -DCMAKE_CXX_COMPILER=icpx \
+      -DBUILD_SHARED_LIBS=ON \
+      -DGGML_BACKEND_DL=ON \
+      -DGGML_SYCL=ON \
+      -DGGML_SYCL_TARGET=INTEL \
+      -DGGML_SYCL_F16=ON; \
+    cmake --build /work/llama.cpp/build --parallel "$(nproc)" --target ggml-sycl; \
+  else \
+    echo "[ollama-sycl] legacy layout: inject ggml-sycl under ml/backend/ggml"; \
+    PIN="${GGML_COMMIT:-15bff84bf56651d6f991f166a2bf0f362996f7f9}"; \
+    git init /tmp/llama.cpp && cd /tmp/llama.cpp && \
+      git remote add origin https://github.com/ggml-org/llama.cpp.git && \
+      git sparse-checkout set ggml/src/ggml-sycl && \
+      git fetch --depth 1 origin "${PIN}" && \
+      git checkout FETCH_HEAD && \
+      cp -r ggml/src/ggml-sycl /ollama/ml/backend/ggml/ggml/src/ && \
+      cd / && rm -rf /tmp/llama.cpp; \
+    SYCL_CPP="$(find /ollama -type f -path '*/ggml-sycl/ggml-sycl.cpp' | head -1)"; \
+    ABI_HDR="$(find /ollama -type f -name 'ggml-backend-impl.h' | head -1)"; \
+    echo "[patch-sycl] SYCL_CPP=${SYCL_CPP}"; \
+    echo "[patch-sycl] ABI_HDR=${ABI_HDR}"; \
+    test -n "${SYCL_CPP}" && test -n "${ABI_HDR}"; \
+    python3 /tmp/patch-sycl.py "${SYCL_CPP}" --abi-header "${ABI_HDR}"; \
+    if [ "${STRIP_SYCLCOMPAT}" = "1" ]; then \
+      HELPER="$(find /ollama -type f -path '*/ggml-sycl/dpct/helper.hpp' | head -1)"; \
+      echo "[patch-sycl] SYCLCOMPAT helper=${HELPER:-MISSING}"; \
+      test -n "${HELPER}" && sed -i '\|#include <syclcompat/math.hpp>|d' "${HELPER}"; \
+    fi; \
+    cmake -S /ollama -B /ollama/build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_COMPILER=icx \
+      -DCMAKE_CXX_COMPILER=icpx \
+      -DGGML_SYCL=ON \
+      -DGGML_SYCL_TARGET=INTEL \
+      -DGGML_SYCL_F16=ON \
+      -DOLLAMA_RUNNER_DIR=sycl; \
+    cmake --build /ollama/build --parallel "$(nproc)" --target ggml-sycl; \
   fi
-
-# Build the SYCL backend as a dynamic library (verbose)
-RUN cmake -B build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER=icx \
-  -DCMAKE_CXX_COMPILER=icpx \
-  -DGGML_SYCL=ON \
-  -DGGML_SYCL_TARGET=INTEL \
-  -DGGML_SYCL_F16=ON \
-  -DOLLAMA_RUNNER_DIR=sycl && \
-  cmake --build build --parallel $(nproc) --target ggml-sycl
 
 # Collect the SYCL runner and its oneAPI runtime dependencies into /sycl-runner
 RUN mkdir -p /sycl-runner && \
-  cp build/lib/ollama/libggml-sycl.so /sycl-runner/ && \
-  # SYCL / DPC++ runtime
+  SO="$(find /ollama/build /work/llama.cpp/build -name 'libggml-sycl.so' 2>/dev/null | head -1)" && \
+  test -n "${SO}" && echo "[ollama-sycl] bundling ${SO}" && cp "${SO}" /sycl-runner/ && \
   cp /opt/intel/oneapi/compiler/latest/lib/libsycl.so* /sycl-runner/ && \
-  # Unified Runtime (oneAPI 2025+)
   find /opt/intel/oneapi -name 'libur_loader.so*' | head -3 | xargs -I{} cp {} /sycl-runner/ && \
   find /opt/intel/oneapi -name 'libur_adapter_level_zero.so*' | head -3 | xargs -I{} cp {} /sycl-runner/ && \
   find /opt/intel/oneapi -maxdepth 4 -name 'libumf.so*' | head -3 | xargs -I{} cp {} /sycl-runner/ && \
-  # oneDNN
   cp /opt/intel/oneapi/dnnl/latest/lib/libdnnl.so* /sycl-runner/ 2>/dev/null; \
-  # oneMKL
   cp /opt/intel/oneapi/mkl/latest/lib/libmkl_core.so* /sycl-runner/ && \
   cp /opt/intel/oneapi/mkl/latest/lib/libmkl_intel_ilp64.so* /sycl-runner/ && \
   cp /opt/intel/oneapi/mkl/latest/lib/libmkl_sycl_blas.so* /sycl-runner/ && \
   cp /opt/intel/oneapi/mkl/latest/lib/libmkl_tbb_thread.so* /sycl-runner/ && \
-  # TBB
   cp /opt/intel/oneapi/tbb/latest/lib/intel64/gcc*/libtbb.so* /sycl-runner/ && \
-  # Intel compiler runtime
   cp /opt/intel/oneapi/compiler/latest/lib/libsvml.so /sycl-runner/ && \
   cp /opt/intel/oneapi/compiler/latest/lib/libimf.so /sycl-runner/ && \
   cp /opt/intel/oneapi/compiler/latest/lib/libintlc.so* /sycl-runner/ && \
   cp /opt/intel/oneapi/compiler/latest/lib/libirng.so /sycl-runner/ && \
   cp /opt/intel/oneapi/compiler/latest/lib/libiomp5.so /sycl-runner/ && \
   cp /opt/intel/oneapi/compiler/latest/lib/libpi_level_zero.so* /sycl-runner/ 2>/dev/null; \
-  # SYCL SPIR-V kernels (needed for bfloat16, complex math, etc.)
   cp /opt/intel/oneapi/compiler/latest/lib/libsycl-fallback*.spv /sycl-runner/ && \
-  cp /opt/intel/oneapi/compiler/latest/lib/libsycl-native*.spv /sycl-runner/
+  cp /opt/intel/oneapi/compiler/latest/lib/libsycl-native*.spv /sycl-runner/ && \
+  strip --strip-unneeded /sycl-runner/*.so* 2>/dev/null; true
 
 # =============================================================================
 # Stage 2: Runtime image
@@ -133,6 +163,8 @@ ENV OLLAMA_KEEP_ALIVE=24h
 ENV OLLAMA_FLASH_ATTENTION=false
 ENV ZES_ENABLE_SYSMAN=1
 ENV ONEAPI_DEVICE_SELECTOR=level_zero:0
+# Optional: Intel Core Ultra (Series 1) Meteor Lake integrated Arc
+ENV IPEX_LLM_NPU_MTL=1
 
 EXPOSE 11434
 ENTRYPOINT ["/usr/bin/ollama"]
