@@ -1,0 +1,36 @@
+services:
+  ollama-sycl:
+    image: docker.io/nartystudios/ollama-intel-arc-sycl:latest
+    container_name: ollama-sycl-narty
+    restart: unless-stopped
+    devices:
+      - /dev/dri:/dev/dri
+    ports:
+      - "11450:11434"
+    volumes:
+      - /opt/ollama-models:/root/.ollama
+      - sycl-cache-volume:/root/.cache
+    environment:
+      - no_proxy=localhost,127.0.0.1
+      - NO_PROXY=localhost,127.0.0.1
+      - ONEAPI_DEVICE_SELECTOR=level_zero:0
+      - ZES_ENABLE_SYSMAN=1
+      - SYCL_CACHE_PERSISTENT=1
+      - SYCL_PI_LEVEL_ZERO_USE_IMMEDIATE_COMMANDLISTS=1
+      - UR_L0_USE_IMMEDIATE_COMMANDLISTS=1
+      - OLLAMA_KEEP_ALIVE
+      - OLLAMA_CONTEXT_LENGTH
+      - OLLAMA_MAX_VRAM
+      - OLLAMA_NUM_PARALLEL
+      - OLLAMA_MAX_LOADED_MODELS
+      - OLLAMA_MAX_QUEUE
+      - OLLAMA_DEBUG
+      - OLLAMA_FLASH_ATTENTION
+      - OLLAMA_KV_CACHE_TYPE
+      - OLLAMA_GPU_OVERHEAD
+      - OLLAMA_NUM_GPU
+      - GGML_SYCL_DEBUG
+      - GGML_SYCL_F16
+
+volumes:
+  sycl-cache-volume: {}
