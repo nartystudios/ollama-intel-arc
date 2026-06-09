@@ -30,14 +30,19 @@ RUN git clone --depth 1 --branch "v${OLLAMA_VERSION}" \
 COPY patch-sycl.py /tmp/patch-sycl.py
 
 RUN set -eux; \
+  export GIT_TERMINAL_PROMPT=0; \
   if [ -f /ollama/LLAMA_CPP_VERSION ]; then \
     echo "[ollama-sycl] modern layout: standalone llama.cpp from LLAMA_CPP_VERSION"; \
     if [ -n "${GGML_COMMIT:-}" ]; then LREF="${GGML_COMMIT}"; \
     else LREF="$(tr -d ' \t\r\n' < /ollama/LLAMA_CPP_VERSION)"; fi; \
     echo "[ollama-sycl] llama.cpp ref=${LREF}"; \
-    git clone --depth 1 --branch "${LREF}" https://github.com/ggml-org/llama.cpp.git /work/llama.cpp \
-      || (git clone https://github.com/ggml-org/llama.cpp.git /work/llama.cpp \
-        && cd /work/llama.cpp && git fetch --depth 1 origin "${LREF}" && git checkout FETCH_HEAD); \
+    rm -rf /work/llama.cpp; \
+    mkdir -p /work/llama.cpp; \
+    git -C /work/llama.cpp init; \
+    git -C /work/llama.cpp remote add origin https://github.com/ggml-org/llama.cpp.git; \
+    git -C /work/llama.cpp fetch --depth 1 origin "${LREF}"; \
+    git -C /work/llama.cpp checkout -q FETCH_HEAD; \
+    test -f /work/llama.cpp/ggml/CMakeLists.txt; \
     cd /work/llama.cpp && cmake -D PATCH_DIR=/ollama/llama/compat -P /ollama/llama/compat/apply-patch.cmake; \
     SYCL_CPP="$(find /work/llama.cpp -type f -path '*/ggml-sycl/ggml-sycl.cpp' | head -1)"; \
     ABI_HDR="$(find /work/llama.cpp -type f -name 'ggml-backend-impl.h' | head -1)"; \
@@ -48,7 +53,7 @@ RUN set -eux; \
     if [ "${STRIP_SYCLCOMPAT}" = "1" ]; then \
       HELPER="$(find /work/llama.cpp /ollama -type f -path '*/ggml-sycl/dpct/helper.hpp' 2>/dev/null | head -1)"; \
       echo "[patch-sycl] SYCLCOMPAT helper=${HELPER:-MISSING}"; \
-      test -n "${HELPER}" && sed -i '\|#include <syclcompat/math.hpp>|d' "${HELPER}"; \
+      if [ -n "${HELPER}" ]; then sed -i '\|#include <syclcompat/math.hpp>|d' "${HELPER}"; fi; \
     fi; \
     cmake -S /work/llama.cpp -B /work/llama.cpp/build \
       -DCMAKE_BUILD_TYPE=Release \
@@ -79,7 +84,7 @@ RUN set -eux; \
     if [ "${STRIP_SYCLCOMPAT}" = "1" ]; then \
       HELPER="$(find /ollama -type f -path '*/ggml-sycl/dpct/helper.hpp' | head -1)"; \
       echo "[patch-sycl] SYCLCOMPAT helper=${HELPER:-MISSING}"; \
-      test -n "${HELPER}" && sed -i '\|#include <syclcompat/math.hpp>|d' "${HELPER}"; \
+      if [ -n "${HELPER}" ]; then sed -i '\|#include <syclcompat/math.hpp>|d' "${HELPER}"; fi; \
     fi; \
     cmake -S /ollama -B /ollama/build \
       -DCMAKE_BUILD_TYPE=Release \
