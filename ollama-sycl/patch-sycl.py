@@ -140,11 +140,19 @@ class Rule:
     not fatal (e.g. cleanup of optional struct fields when absent in source)."""
 
 
+# Match the *last* parameter as (struct)? ggml_cgraph * <id> — do NOT use a
+# naive "[^)]*?cgraph" tail: that matches the substring "cgraph" inside the
+# type name "ggml_cgraph" and breaks the regex (seen with upstream llama.cpp).
 _GRAPH_COMPUTE_DEF_RE = re.compile(
-    r"(static\s+(?:enum\s+)?ggml_status\s+ggml_backend_sycl_graph_compute\s*\([^)]*?cgraph)\s*\)",
+    r"(static\s+(?:enum\s+)?ggml_status\s+ggml_backend_sycl_graph_compute\s*"
+    r"\(\s*ggml_backend_t\s+\w+\s*,\s*(?:struct\s+)?ggml_cgraph\s*\*\s*\w+\s*)\s*\)",
+    re.MULTILINE,
 )
 _GRAPH_COMPUTE_PATCHED_RE = re.compile(
-    r"ggml_backend_sycl_graph_compute\s*\([^)]*\bint\s+batch_size\b[^)]*\)",
+    r"static\s+(?:enum\s+)?ggml_status\s+ggml_backend_sycl_graph_compute\s*"
+    r"\(\s*ggml_backend_t\s+\w+\s*,\s*(?:struct\s+)?ggml_cgraph\s*\*\s*\w+\s*,\s*"
+    r"int\s+batch_size\s*\)",
+    re.MULTILINE,
 )
 
 
@@ -158,7 +166,8 @@ def _rule_graph_compute_batch_size(src: str) -> tuple[str, bool]:
     if count == 0:
         return src, False
     new_src = re.sub(
-        r"(ggml_backend_sycl_graph_compute\([^)]*int\s+batch_size\)\s*\{)",
+        r"(ggml_backend_sycl_graph_compute\s*\(\s*ggml_backend_t\s+\w+\s*,\s*"
+        r"(?:struct\s+)?ggml_cgraph\s*\*\s*\w+\s*,\s*int\s+batch_size\s*\)\s*\{)",
         r"\1\n    GGML_UNUSED(batch_size);",
         new_src,
         count=1,
