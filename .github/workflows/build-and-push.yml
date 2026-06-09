@@ -18,7 +18,10 @@ on:
   workflow_dispatch:
     inputs:
       ollama_version:
-        description: 'Ollama version (leave empty for latest)'
+        description: 'Ollama version without leading v (e.g. 0.30.7). Leave empty for latest stable.'
+        required: false
+      ggml_commit:
+        description: 'Optional llama.cpp tag or SHA (only workflow_dispatch). Empty = Dockerfile uses LLAMA_CPP_VERSION.'
         required: false
 
 env:
@@ -37,13 +40,29 @@ jobs:
 
       - name: Get latest Ollama version
         id: ollama
+        env:
+          # inputs only exist on workflow_dispatch; avoid null on push/PR/schedule
+          INPUT_OLLAMA: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ollama_version || '' }}
+          INPUT_GGML: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ggml_commit || '' }}
         run: |
-          VERSION="${{ github.event.inputs.ollama_version }}"
-          if [ -z "$VERSION" ]; then
-            VERSION=$(curl -s https://api.github.com/repos/ollama/ollama/releases/latest | jq -r .tag_name | sed 's/v//')
+          set -euo pipefail
+          if [ -n "${INPUT_OLLAMA:-}" ]; then
+            VERSION="${INPUT_OLLAMA}"
+          else
+            VERSION=$(curl -fsSL https://api.github.com/repos/ollama/ollama/releases/latest | jq -r .tag_name | sed 's/^v//')
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Building Ollama v$VERSION"
+          # Normalise: allow manual dispatch with leading "v"
+          VERSION="${VERSION#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          {
+            echo "build_args<<BUILD_ARGS_EOF"
+            echo "OLLAMA_VERSION=${VERSION}"
+            if [ -n "${INPUT_GGML:-}" ]; then
+              echo "GGML_COMMIT=${INPUT_GGML}"
+            fi
+            echo "BUILD_ARGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building Ollama v${VERSION}"
 
       - name: Log in to Docker Hub
         if: github.ref == 'refs/heads/main' || github.event_name == 'schedule'
@@ -63,8 +82,7 @@ jobs:
           push: false
           tags: |
             nartystudios/ollama-intel-arc-sycl:dev
-          build-args: |
-            OLLAMA_VERSION=${{ steps.ollama.outputs.version }}
+          build-args: ${{ steps.ollama.outputs.build_args }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -78,7 +96,6 @@ jobs:
             nartystudios/ollama-intel-arc-sycl:latest
             nartystudios/ollama-intel-arc-sycl:${{ steps.ollama.outputs.version }}
             nartystudios/ollama-intel-arc-sycl:nightly
-          build-args: |
-            OLLAMA_VERSION=${{ steps.ollama.outputs.version }}
+          build-args: ${{ steps.ollama.outputs.build_args }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
