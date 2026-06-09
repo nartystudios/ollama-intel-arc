@@ -87,7 +87,8 @@ def parse_backend_abi(header_path: Path) -> BackendABI:
     if not header_path.exists():
         raise FileNotFoundError(f"ABI header not found: {header_path}")
 
-    src = header_path.read_text()
+    # Git on Windows / mixed checkouts may leave CRLF; normalize for struct parsing.
+    src = header_path.read_text().replace("\r\n", "\n").replace("\r", "\n")
 
     backend_i = _extract_struct(src, "ggml_backend_i")
     buffer_i = _extract_struct(src, "ggml_backend_buffer_i")
@@ -112,7 +113,8 @@ def _extract_struct(src: str, name: str) -> str:
     rather than crashing — better to fail later in patch_file with a clear
     "ABI requires X but source lacks Y" message.
     """
-    pattern = re.compile(rf"struct\s+{re.escape(name)}\s*\{{(.*?)\n\s*\}};", re.DOTALL)
+    # Closing brace: tolerate CRLF-normalized files and spaces before `};`
+    pattern = re.compile(rf"struct\s+{re.escape(name)}\s*\{{(.*?)\r?\n\s*\}};", re.DOTALL)
     m = pattern.search(src)
     return m.group(1) if m else ""
 
@@ -148,10 +150,15 @@ _GRAPH_COMPUTE_DEF_RE = re.compile(
     r"\(\s*ggml_backend_t\s+\w+\s*,\s*(?:struct\s+)?ggml_cgraph\s*\*\s*\w+\s*)\s*\)",
     re.MULTILINE,
 )
+# Some trees qualify the first argument (e.g. `const ggml_backend_t backend`).
+_GRAPH_COMPUTE_DEF_RE_ALT = re.compile(
+    r"(static\s+(?:enum\s+)?ggml_status\s+ggml_backend_sycl_graph_compute\s*"
+    r"\(\s*[^,]+?ggml_backend_t[^,]*?,\s*(?:struct\s+)?ggml_cgraph\s*\*\s*\w+\s*)\s*\)",
+    re.MULTILINE,
+)
 _GRAPH_COMPUTE_PATCHED_RE = re.compile(
     r"static\s+(?:enum\s+)?ggml_status\s+ggml_backend_sycl_graph_compute\s*"
-    r"\(\s*ggml_backend_t\s+\w+\s*,\s*(?:struct\s+)?ggml_cgraph\s*\*\s*\w+\s*,\s*"
-    r"int\s+batch_size\s*\)",
+    r"\(\s*[^)]*?\bint\s+batch_size\s*\)",
     re.MULTILINE,
 )
 
@@ -160,19 +167,38 @@ def _graph_compute_already_patched(src: str) -> bool:
     return bool(_GRAPH_COMPUTE_PATCHED_RE.search(src))
 
 
+def _insert_ggml_unused_after_signature(src: str) -> tuple[str, int]:
+    """After `int batch_size` was added, insert GGML_UNUSED before the opening brace."""
+    # After batch_size is present, match the full param list up to `) {` (same line).
+    # Use a permissive inner pattern so `const ggml_backend_t` / multi-arg shapes still match.
+    pat1 = re.compile(
+        r"(ggml_backend_sycl_graph_compute\s*\(\s*[^)]*?\bint\s+batch_size\s*\)\s*\{)",
+        re.MULTILINE,
+    )
+    out, n = pat1.subn(r"\1\n    GGML_UNUSED(batch_size);", src, count=1)
+    if n:
+        return out, n
+
+    # Opening brace on the following line
+    pat2 = re.compile(
+        r"(ggml_backend_sycl_graph_compute\s*\(\s*[^)]*?\bint\s+batch_size\s*\)\s*)\n\s*\{",
+        re.MULTILINE,
+    )
+    return pat2.subn(r"\1\n{\n    GGML_UNUSED(batch_size);", src, count=1)
+
+
 def _rule_graph_compute_batch_size(src: str) -> tuple[str, bool]:
     """Add 'int batch_size' to ggml_backend_sycl_graph_compute and silence the unused warning."""
     new_src, count = _GRAPH_COMPUTE_DEF_RE.subn(r"\1, int batch_size)", src)
     if count == 0:
+        new_src, count = _GRAPH_COMPUTE_DEF_RE_ALT.subn(r"\1, int batch_size)", src)
+    if count == 0:
         return src, False
-    new_src = re.sub(
-        r"(ggml_backend_sycl_graph_compute\s*\(\s*ggml_backend_t\s+\w+\s*,\s*"
-        r"(?:struct\s+)?ggml_cgraph\s*\*\s*\w+\s*,\s*int\s+batch_size\s*\)\s*\{)",
-        r"\1\n    GGML_UNUSED(batch_size);",
-        new_src,
-        count=1,
-    )
-    return new_src, True
+    final_src, n = _insert_ggml_unused_after_signature(new_src)
+    if n == 0:
+        # Do not apply a half-patch (batch_size without GGML_UNUSED can break -Werror builds).
+        return src, False
+    return final_src, True
 
 
 def _rule_strip_designated_field(field_name: str):
@@ -241,7 +267,7 @@ RULES: list[Rule] = [
 
 def patch_file(src_path: Path, header_path: Path) -> PatchResult:
     abi = parse_backend_abi(header_path)
-    src = src_path.read_text()
+    src = src_path.read_text().replace("\r\n", "\n").replace("\r", "\n")
     original = src
     applied: list[str] = []
 
@@ -251,12 +277,19 @@ def patch_file(src_path: Path, header_path: Path) -> PatchResult:
         new_src, ok = rule.apply(src)
         if not ok:
             if rule.fail_if_not_applied:
+                extra = ""
+                if rule.name == "graph_compute_batch_size":
+                    extra = (
+                        f" ABI: graph_compute_has_batch_size={abi.graph_compute_has_batch_size!r}, "
+                        f"has_2d_async=({abi.has_set_tensor_2d_async!r},{abi.has_get_tensor_2d_async!r}), "
+                        f"buffer_2d=({abi.has_buffer_set_tensor_2d!r},{abi.has_buffer_get_tensor_2d!r})."
+                    )
                 raise PatchError(
                     f"Rule '{rule.name}' is required by the Ollama ABI but its "
                     f"target pattern could not be located in {src_path}. "
                     "The upstream ggml-sycl source has likely drifted in a way "
                     "this patcher does not yet understand. Inspect the file "
-                    "manually and update the patcher rules."
+                    f"manually and update the patcher rules.{extra}"
                 )
             continue
         src = new_src
