@@ -36,7 +36,9 @@ WORKDIR /ollama
 
 # Apply API compatibility patches
 COPY patch-sycl.py /tmp/patch-sycl.py
-RUN python3 /tmp/patch-sycl.py ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp
+RUN python3 /tmp/patch-sycl.py \
+  ml/backend/ggml/ggml/src/ggml-sycl/ggml-sycl.cpp \
+  --abi-header ml/backend/ggml/ggml/src/ggml-backend-impl.h
 
 # DPC++ 2026 removed SYCLcompat; strip the include only when building against 2026+.
 RUN if [ "${STRIP_SYCLCOMPAT}" = "1" ]; then \
