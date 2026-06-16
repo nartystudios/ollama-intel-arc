@@ -1,4 +1,4 @@
-ARG OLLAMA_VERSION=0.30.7
+ARG OLLAMA_VERSION=0.30.8
 # Optional llama.cpp git tag or SHA.
 # - Modern Ollama (has LLAMA_CPP_VERSION): defaults to that file's tag (e.g. b9509 for v0.30.7).
 # - Legacy Ollama (no LLAMA_CPP_VERSION): defaults to the pin in the RUN script if unset.
